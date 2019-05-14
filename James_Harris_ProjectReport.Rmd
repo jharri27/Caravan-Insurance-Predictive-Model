@@ -1,0 +1,315 @@
+---
+title: "ProjectCaravan"
+author: "Jack Harris, Jessica Kwon"
+date: "12/7/2018"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Load libraries
+
+```{r load libraries}
+options(warn=-1)
+library(readr)
+library(caret, warn.conflicts = F, quietly=T)
+library(e1071, warn.conflicts = F, quietly=T)
+library(Hmisc, warn.conflicts = F, quietly=T)
+library(corrplot, warn.conflicts = F, quietly=T)
+library(dplyr, warn.conflicts = F, quietly=T)
+library(arules, warn.conflicts = F, quietly=T)
+library(arulesViz, warn.conflicts = F, quietly=T)
+library(utils, warn.conflicts = F, quietly=T)
+library(funModeling, warn.conflicts = F, quietly=T)
+library(scales, warn.conflicts = F, quietly=T)
+library(ggplot2, warn.conflicts = F, quietly=T)
+library(gridExtra, warn.conflicts = F, quietly=T)
+library(grid, warn.conflicts = F, quietly=T)
+library(lattice, warn.conflicts = F, quietly=T)
+library(RWeka, warn.conflicts = F, quietly=T)
+library(rpart, warn.conflicts = F, quietly=T)
+library(naivebayes, warn.conflicts = F, quietly=T)
+library(klaR, warn.conflicts = F, quietly=T)
+library(stringr, warn.conflicts = F, quietly=T)
+library(FSelector, warn.conflicts = F, quietly=T)
+
+options(warn=0)
+```
+
+
+# Load the data
+```{r}
+target <- read_csv("CaravanTargetVariable4000.csv")
+train <- read_csv("CaravanTrain5822.csv")
+test <- read_csv("CaravanTest4000.csv")
+```
+
+## Association rule mining
+
+```{r association rule mining}
+# Change all variables to factors, store in new dataframe trainTemp
+
+cols <- colnames(train)
+trainTemp <- train
+trainTemp[cols] <- lapply(train[cols], factor)
+
+# Convert dataframe into transactional data
+
+trainT <- as(trainTemp, "transactions")
+
+# Generate a set of rules based on trainT, min support 0.005, confidence 0.1, min length 2, with CARAVANNumMobileHomePol=1 as RHS
+
+rules1 <- apriori(data=trainT, parameter=list(supp=0.005, conf=0.15, minlen=2), appearance=list(default="lhs", rhs="CARAVANNumMobileHomePol=1"))
+rules1 <- sort(rules1, decreasing=TRUE, by='lift')
+summary(rules1)
+inspect(rules1)
+```
+
+## Decision Tree
+
+```{r decision tree}
+trainFac <- train
+trainFac[,1:86] <- lapply(trainFac[,1:86], factor)
+
+dtTrain <- J48(CARAVANNumMobileHomePol ~., data=trainFac)
+summary(dtTrain)
+
+e1 <- evaluate_Weka_classifier(dtTrain, numFolds=3, seed=500, class=TRUE)
+e1
+e1_predict <- predict(dtTrain, newdata = test)
+confusionMatrix(e1_predict, as.factor(target$CARAVANNumMobileHomePol))
+
+```
+
+
+
+## Naive Bayes method
+
+```{r naive bayes}
+nbTrain <- train
+nbTrain$CARAVANNumMobileHomePol <- str_replace_all(nbTrain$CARAVANNumMobileHomePol, "0", "No")
+nbTrain$CARAVANNumMobileHomePol <- str_replace_all(nbTrain$CARAVANNumMobileHomePol, "1", "Yes")
+nbTrain[,1:86] <- lapply(nbTrain[,1:86], factor)
+nbTest <- test
+nbTarget <- target
+nbTarget$CARAVANNumMobileHomePol <- str_replace_all(nbTarget$CARAVANNumMobileHomePol, "0", "No")
+nbTarget$CARAVANNumMobileHomePol <- str_replace_all(nbTarget$CARAVANNumMobileHomePol, "1", "Yes")
+  
+x <- nbTrain[,-86]
+y <- nbTrain$CARAVANNumMobileHomePol
+```
+
+```{r, echo=FALSE}
+options(warn=-1)
+nbModel1 <- train(x, y, 'nb', trControl=trainControl(method='cv', number=10))
+##using Naive Bayes model, we ran on the test data for the prediction
+nb_predict <- predict(nbModel1, newdata= nbTest)
+options(warn = 0)
+```
+
+### check the precision and recall level of the model.
+```{r}
+confusionMatrix(nb_predict, as.factor(nbTarget$CARAVANNumMobileHomePol))
+
+precision = posPredValue(nb_predict, as.factor(nbTarget$CARAVANNumMobileHomePol), positive = "Yes")
+recall = sensitivity(nb_predict,  as.factor(nbTarget$CARAVANNumMobileHomePol), positive = "Yes")
+f <- 2 * precision * recall / (precision +recall)
+
+sprintf("Precision is %.2f; recall is %.2f, F measure of %.2f", precision, recall, f)
+```
+
+
+#Subset the data with strong predictors 
+
+Based on AR rule above, we ended up having 6 strong predictors that results customer to buy 'Caravan' insurance.
+
+variables are the following:
+"PurchPowerClass","ContribPriv3rdPartyIns","ContribFirePol","NumBoatPol","ContribCarPol","AvgInc"
+
+```{r}
+col = c("CARAVANNumMobileHomePol","AvgInc","PurchPowerClass","ContribPriv3rdPartyIns","ContribCarPol","ContribFirePol","NumBoatPol")
+ssTrain = train[col]
+col = c("AvgInc","PurchPowerClass","ContribPriv3rdPartyIns","ContribCarPol","ContribFirePol","NumBoatPol")
+ssTest = test[col]
+```
+
+```{r}
+#Purchase Power Class with Y
+barTrain <- ssTrain
+barTrain$CARAVANNumMobileHomePol <- str_replace_all(barTrain$CARAVANNumMobileHomePol, "0", "No")
+barTrain$CARAVANNumMobileHomePol <- str_replace_all(barTrain$CARAVANNumMobileHomePol, "1", "Yes")
+ppc <- table(barTrain$CARAVANNumMobileHomePol,barTrain$PurchPowerClass)
+ppc <- as.data.frame(ppc)
+ppc$Freq[ppc$Var1 =="No"]= subset(ppc$Freq, ppc$Var1 =="No")/sum(subset(ppc, ppc$Var1== "No")$Freq)
+ppc$Freq[ppc$Var1 =="Yes"]= subset(ppc$Freq, ppc$Var1 =="Yes")/sum(subset(ppc, ppc$Var1== "Yes")$Freq)
+colnames(ppc) = c("Purchased","PurchasePowerClass", "Freq")
+p1 = ggplot(ppc, aes(color = PurchasePowerClass, fill = PurchasePowerClass, y = Freq, x=PurchasePowerClass)) +
+  geom_bar(position = "identity", stat = "identity") + scale_y_continuous(labels = percent) +
+  facet_wrap(~Purchased) + ggtitle("Purchas Power Class by Caravan Insurance Purchase") + theme(legend.title =element_text(size =8),legend.position="bottom",legend.key.width =unit(.1, "cm"), plot.title = element_text(size = 8, face = "bold"))
+## Average Income
+ai <- table(barTrain$CARAVANNumMobileHomePol,barTrain$AvgInc)
+ai <- as.data.frame(ai)
+ai$Freq[ai$Var1 =="No"]= subset(ai$Freq, ai$Var1 =="No")/sum(subset(ai, ai$Var1== "No")$Freq)
+ai$Freq[ai$Var1 =="Yes"]= subset(ai$Freq, ai$Var1 =="Yes")/sum(subset(ai, ai$Var1== "Yes")$Freq)
+colnames(ai) = c("Purchased","AvgIncClass", "Freq")
+p2 = ggplot(ai, aes(color = AvgIncClass, fill = AvgIncClass, y = Freq, x=AvgIncClass)) +
+  geom_bar(position = "identity", stat = "identity") + scale_y_continuous(labels = percent) +
+  facet_wrap(~Purchased) + ggtitle("Average Income Class by Caravan Insurance Purchase") +
+  theme(legend.title =element_text(size =8),legend.position="bottom",legend.key.width =unit(.1, "cm"), plot.title = element_text(size = 8, face = "bold"))
+
+## Contribution private third party insurance
+cp3 <- table(barTrain$CARAVANNumMobileHomePol,barTrain$ContribPriv3rdPartyIns)
+cp3 <- as.data.frame(cp3)
+cp3$Freq[cp3$Var1 =="No"]= subset(cp3$Freq, cp3$Var1 =="No")/sum(subset(cp3, cp3$Var1== "No")$Freq)
+cp3$Freq[cp3$Var1 =="Yes"]= subset(cp3$Freq, cp3$Var1 =="Yes")/sum(subset(cp3, cp3$Var1== "Yes")$Freq)
+colnames(cp3) = c("Purchased","Priv3rdInsContrib", "Freq")
+p3 = ggplot(cp3, aes(color = Priv3rdInsContrib, fill = Priv3rdInsContrib, y = Freq, x=Priv3rdInsContrib)) +
+  geom_bar(position = "identity", stat = "identity") + scale_y_continuous(labels = percent) +
+  facet_wrap(~Purchased) + ggtitle("Contrib. Private 3rd Party Insurance Class by Caravan Purchase") +
+  theme(legend.title =element_text(size =8), legend.position="bottom",legend.key.width =unit(.1, "cm"), plot.title = element_text(size = 8, face = "bold"))
+
+
+## Contribution Car Policy
+ccp <- table(barTrain$CARAVANNumMobileHomePol,barTrain$ContribCarPol)
+ccp <- as.data.frame(ccp)
+ccp$Freq[ccp$Var1 =="No"]= subset(ccp$Freq, ccp$Var1 =="No")/sum(subset(ccp, ccp$Var1== "No")$Freq)
+ccp$Freq[ccp$Var1 =="Yes"]= subset(ccp$Freq, ccp$Var1 =="Yes")/sum(subset(ccp, ccp$Var1== "Yes")$Freq)
+colnames(ccp) = c("Purchased","ContribCarPol", "Freq")
+p4 = ggplot(ccp, aes(color = ContribCarPol, fill = ContribCarPol, y = Freq, x=ContribCarPol)) +
+  geom_bar(position = "identity", stat = "identity") + scale_y_continuous(labels = percent) +
+  facet_wrap(~Purchased) + ggtitle("Car Policy Contrib. Class by Caravan Purchase") +
+  theme(legend.title =element_text(size =8), legend.position="bottom",legend.key.width =unit(.1, "cm"), plot.title = element_text(size = 8, face = "bold"))
+
+## Contribution Fire Policy
+cfp <- table(barTrain$CARAVANNumMobileHomePol,barTrain$ContribFirePol)
+cfp <- as.data.frame(cfp)
+cfp$Freq[cfp$Var1 =="No"]= subset(cfp$Freq, cfp$Var1 =="No")/sum(subset(cfp, cfp$Var1== "No")$Freq)
+cfp$Freq[cfp$Var1 =="Yes"]= subset(cfp$Freq, cfp$Var1 =="Yes")/sum(subset(cfp, cfp$Var1== "Yes")$Freq)
+colnames(cfp) = c("Purchased","ContribFirePol", "Freq")
+p5 = ggplot(cfp, aes(color = ContribFirePol, fill = ContribFirePol, y = Freq, x=ContribFirePol)) +
+  geom_bar(position = "identity", stat = "identity") + scale_y_continuous(labels = percent) +
+  facet_wrap(~Purchased) + ggtitle("Fire Policy Contrib. Class by Caravan Purchase") +
+  theme(legend.title =element_text(size =8), legend.position="bottom",legend.key.width =unit(.1, "cm"), plot.title = element_text(size = 8, face = "bold"))
+
+## Number of Boat Policy
+nbp <- table(barTrain$CARAVANNumMobileHomePol,barTrain$NumBoatPol)
+nbp <- as.data.frame(nbp)
+nbp$Freq[nbp$Var1 =="No"]= subset(nbp$Freq, nbp$Var1 =="No")/sum(subset(nbp, nbp$Var1== "No")$Freq)
+nbp$Freq[nbp$Var1 =="Yes"]= subset(nbp$Freq, nbp$Var1 =="Yes")/sum(subset(nbp, nbp$Var1== "Yes")$Freq)
+colnames(nbp) = c("Purchased","NumBoatPol", "Freq")
+p6 = ggplot(nbp, aes(color = NumBoatPol, fill = NumBoatPol, y = Freq, x=NumBoatPol)) +
+  geom_bar(position = "identity", stat = "identity") + scale_y_continuous(labels = percent) +
+  facet_wrap(~Purchased) + ggtitle("Number of Boat Policy by Caravan Purchase") +
+  theme(legend.title =element_text(size =8), legend.position="bottom",legend.key.width =unit(.1, "cm"), plot.title = element_text(size = 8, face = "bold"))
+
+grid.arrange(p1,p2,p3,p4,p5,p6, ncol = 3)
+```
+
+## check AR rule with significant variables
+
+```{r}
+# Change all variables to factors, store in new dataframe trainTemp
+
+cols <- colnames(ssTrain)
+trainTemp <- ssTrain
+trainTemp[cols] <- lapply(train[cols], factor)
+
+# Convert dataframe into transactional data
+
+trainT <- as(trainTemp, "transactions")
+
+# Generate a set of rules based on trainT, min support 0.006, confidence 0.1, min length 3, with CARAVANNumMobileHomePol=1 as RHS
+
+rules2 <- apriori(data=trainT, parameter=list(supp=0.006, conf=0.1, minlen=3), appearance=list(default="lhs", rhs="CARAVANNumMobileHomePol=1"))
+rules2 <- sort(rules2, decreasing=TRUE, by='count')
+inspect(rules2)
+```
+
+### run the Decision tree model with strong predictors only
+```{r}
+trainFac1 <- ssTrain
+trainFac1[,1:7] <- lapply(trainFac1[,1:7], factor)
+trainFac1$CARAVANNumMobileHomePol <- as.factor(trainFac1$CARAVANNumMobileHomePol)
+dtTrain1 <- J48(CARAVANNumMobileHomePol ~., data=trainFac1)
+information.gain(CARAVANNumMobileHomePol~., data=trainFac1)
+summary(dtTrain1)
+
+e2 <- evaluate_Weka_classifier(dtTrain1, numFolds=3, seed=500, class=TRUE)
+e2
+col = c("AvgInc","PurchPowerClass","ContribPriv3rdPartyIns","ContribCarPol","ContribFirePol","NumBoatPol")
+testFac = ssTest
+testFac[,1:6] <- lapply(testFac[,1:6], factor)
+
+e2_predict <- predict(dtTrain1, newdata = ssTest)
+confusionMatrix(e2_predict, as.factor(target$CARAVANNumMobileHomePol))
+```
+
+even though we used only significant variables for the second model, result doesn't have difference from using full variables.
+
+### same process of naive bayes with significant variables
+```{r, echo=FALSE}
+options(warn = -1)
+nbTrain1 <- ssTrain
+nbTrain1$CARAVANNumMobileHomePol <- str_replace_all(nbTrain1$CARAVANNumMobileHomePol, "0", "No")
+nbTrain1$CARAVANNumMobileHomePol <- str_replace_all(nbTrain1$CARAVANNumMobileHomePol, "1", "Yes")
+nbTrain1[,1:7] <- lapply(nbTrain1[,1:7], factor)
+nbTest1 <- ssTest
+
+x_1 <- nbTrain1[,-7]
+y_1 <- nbTrain1$CARAVANNumMobileHomePol
+
+nbModel2 <- train(x_1, y_1, 'nb', trControl=trainControl(method='cv', number=10))
+
+nb_predict1 <- predict(nbModel2, newdata= nbTest1)
+options(warn = 0)
+```
+
+
+```{r}
+nbModel2
+confusionMatrix(nb_predict1, as.factor(nbTarget$CARAVANNumMobileHomePol))
+
+precision1 = posPredValue(nb_predict1, as.factor(nbTarget$CARAVANNumMobileHomePol), positive = "Yes")
+recall1 = sensitivity(nb_predict1,  as.factor(nbTarget$CARAVANNumMobileHomePol), positive = "Yes")
+f1 <- 2 * precision1 * recall1 / (precision1 +recall1)
+
+sprintf("Precision is %.2f; recall is %.2f, F measure of %.2f", precision1, recall1, f1)
+```
+
+#Random Forest Model
+```{r}
+options(warn = -1)
+rfTrain <- ssTrain
+x = rfTrain[,-1]
+y = as.factor(rfTrain$CARAVANNumMobileHomePol)
+
+rf_model <- train(x, y, method="rf", ntree=2)
+rfTest <- ssTest
+rf_predict <- predict(rf_model, newdata = rfTest)
+options(warn = 0)
+```
+
+```{r}
+confusionMatrix(rf_predict, as.factor(target$CARAVANNumMobileHomePol))
+plot(rf_model$finalModel)
+```
+
+## SVM modeling
+
+```{r}
+svmTrain <- ssTrain
+#svm Linear
+svmTrain$CARAVANNumMobileHomePol <- as.factor(svmTrain$CARAVANNumMobileHomePol)
+svm_model_linear <- train(CARAVANNumMobileHomePol~., data = svmTrain, method = "svmLinear")
+svmLinear_pred <- predict(svm_model_linear, newdata = ssTest)
+confusionMatrix(svmLinear_pred, as.factor(target$CARAVANNumMobileHomePol))
+
+#svm radial
+svm_model_rbf <- train(CARAVANNumMobileHomePol~., data = svmTrain, method = "svmRadial")
+svmRadial_pred <- predict(svm_model_linear, newdata = ssTest)
+confusionMatrix(svmRadial_pred, as.factor(target$CARAVANNumMobileHomePol))
+```
+
